@@ -1,0 +1,114 @@
+-- ============================================
+-- M5 - Consultas con JOINs
+-- Base de datos: Ventas_Tech_DB
+-- Tablas: clientes, categorias, productos, ventas
+-- ============================================
+
+USE Ventas_Tech_DB;
+GO
+
+-- ============================================
+-- Paso previo — Dimensión de segmentación
+-- El esquema de M3 (clientes, categorias, productos, ventas) no tenía
+-- ninguna columna geográfica ni de segmentación. Se agrega "segmento"
+-- a clientes para poder agrupar y filtrar en la Consulta 1 y en la
+-- Consulta 4. Esto también hay que correrlo en el script de M3.
+-- ============================================
+ALTER TABLE clientes ADD segmento VARCHAR(20);
+GO
+
+UPDATE clientes SET segmento = 'Minorista' WHERE id_cliente IN (1, 3, 5);
+UPDATE clientes SET segmento = 'Mayorista' WHERE id_cliente IN (2, 4);
+GO
+
+-- ============================================
+-- Consulta 1 — Vista base del proyecto (INNER JOIN)
+-- Combina ventas con clientes, productos y categorías
+-- ============================================
+SELECT
+    v.fecha_venta                           AS fecha,
+    c.id_cliente,
+    c.nombre                                AS cliente,
+    c.segmento                              AS segmento_cliente,
+    p.nombre_producto                       AS producto,
+    cat.nombre_categoria                    AS categoria,
+    v.cantidad,
+    v.precio_unitario,
+    (v.cantidad * v.precio_unitario)        AS total_venta
+FROM ventas v
+INNER JOIN clientes   c   ON v.id_cliente  = c.id_cliente
+INNER JOIN productos  p   ON v.id_producto = p.id_producto
+INNER JOIN categorias cat ON p.id_categoria = cat.id_categoria
+ORDER BY v.fecha_venta;
+GO
+
+-- ============================================
+-- Consulta 2 — Clientes sin ventas (LEFT JOIN)
+-- ============================================
+SELECT
+    c.nombre,
+    c.email,
+    c.fecha_registro
+FROM clientes c
+LEFT JOIN ventas v ON c.id_cliente = v.id_cliente
+WHERE v.id_cliente IS NULL;
+GO
+
+-- ============================================
+-- Consulta 3 — Productos sin ventas (LEFT JOIN)
+-- ============================================
+SELECT
+    p.nombre_producto,
+    cat.nombre_categoria AS categoria,
+    p.precio
+FROM productos p
+INNER JOIN categorias cat ON p.id_categoria = cat.id_categoria
+LEFT JOIN ventas v ON p.id_producto = v.id_producto
+WHERE v.id_producto IS NULL;
+GO
+
+-- ============================================
+-- Consulta 4 — Consolidado por canal (UNION ALL)
+-- El canal no existe en las tablas: se genera como columna literal,
+-- separando las ventas según el segmento del cliente que compró.
+-- ============================================
+WITH ventas_canal AS (
+    SELECT
+        v.fecha_venta                    AS fecha,
+        (v.cantidad * v.precio_unitario) AS total,
+        'Mayorista'                      AS canal
+    FROM ventas v
+    INNER JOIN clientes c ON v.id_cliente = c.id_cliente
+    WHERE c.segmento = 'Mayorista'
+
+    UNION ALL
+
+    SELECT
+        v.fecha_venta                    AS fecha,
+        (v.cantidad * v.precio_unitario) AS total,
+        'Minorista'                      AS canal
+    FROM ventas v
+    INNER JOIN clientes c ON v.id_cliente = c.id_cliente
+    WHERE c.segmento = 'Minorista'
+)
+SELECT
+    canal,
+    COUNT(*)      AS cantidad_ventas,
+    SUM(total)    AS total_facturado
+FROM ventas_canal
+GROUP BY canal;
+GO
+
+-- ============================================
+-- Hallazgos
+-- ============================================
+-- 1. Las Consultas 2 y 3 devuelven 0 filas con los datos actuales: los 5 clientes
+--    y los 6 productos cargados en M3 tienen al menos una venta registrada.
+--    Esto es correcto y esperado; las consultas sirven igual para detectar
+--    clientes o productos sin movimiento a medida que se agreguen más registros.
+-- 2. El canal "Mayorista" concentra más facturación que "Minorista" a pesar de
+--    tener menos clientes (2 contra 3), porque incluye las compras de mayor
+--    volumen y precio (Laptop Pro 15, Monitor 4K).
+-- 3. La vista de la Consulta 1 ya queda lista para Power BI: tiene fecha y
+--    segmento_cliente como columnas para filtrar, y categoria como columna
+--    para agrupar.
